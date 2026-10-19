@@ -1,0 +1,12 @@
+# Code only. The Hammer map, skin textures, the decompiled AK mesh and
+# generated models/materials stay local (see README).
+/*
+!/.gitignore
+!/README.md
+!/gen_gacha_ak.ps1
+!/cfg/
+!/maps/
+/maps/*
+!/maps/scripts/
+# Valve's API declaration file (copy it from cs_script_demo, see README)
+/maps/scripts/point_script.d.ts
