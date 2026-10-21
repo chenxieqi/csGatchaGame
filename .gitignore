@@ -1,9 +1,12 @@
-# Code only. The Hammer map, skin textures, the decompiled AK mesh and
+# Code only. The Hammer map, skin textures, the decompiled Valve meshes and
 # generated models/materials stay local (see README).
 /*
 !/.gitignore
 !/README.md
 !/gen_gacha_ak.ps1
+!/gen_gacha_weapon.py
+!/gen_gacha_knife.py
+!/make_relief.py
 !/cfg/
 !/maps/
 /maps/*
