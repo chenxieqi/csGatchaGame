@@ -7,6 +7,9 @@
 !/gen_gacha_weapon.py
 !/gen_gacha_knife.py
 !/make_relief.py
+!/secret_filter.py
+!/.gitattributes
+# .env (the admin password hash) stays local
 !/cfg/
 !/maps/
 /maps/*

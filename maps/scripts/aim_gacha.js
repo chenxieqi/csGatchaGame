@@ -1217,7 +1217,7 @@ function clearDroppedWeapons() {
 // logging in) and put the number it prints into ADMIN_PASSWORD_HASH.
 // ---------------------------------------------------------------------------
 const ADMIN_COMMAND = "aimx";
-const ADMIN_PASSWORD_HASH = 467628588;
+const ADMIN_PASSWORD_HASH = 0; // real value from .env (AIMX_PASSWORD_HASH), see README
 
 /** FNV-1a, 32 bit */
 /** @param {string} text */

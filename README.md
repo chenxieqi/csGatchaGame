@@ -101,10 +101,19 @@ Not included: the Hammer map, skin textures, decompiled Valve meshes and all com
 ### Admin console command
 
 All test commands live under one password-locked console command defined in `aim_gacha.js`
-(`ADMIN_COMMAND`); only a hash of the password is stored. Log in with `<command> login <password>`,
+(`ADMIN_COMMAND`); only a hash of the password is used. Log in with `<command> login <password>`,
 then e.g. `coins 500`, `give <skin>`, `give_all`, `knife_give <skin>`, `boost 10`, `rate sr 12`,
 `reset_all confirm`, `showcase`, `area a|b|off`. Change the password by running `<command> hash <new>`
-and putting the number into `ADMIN_PASSWORD_HASH`.
+and putting the number into `.env` as `AIMX_PASSWORD_HASH=<number>`.
+
+The hash is kept out of the repository: `.env` is not committed, and a git filter
+(`secret_filter.py`, set up by `.gitattributes`) stores `ADMIN_PASSWORD_HASH = 0` on commit and puts the
+`.env` value back on checkout. Once per clone:
+
+```bash
+git config filter.adminhash.clean "python secret_filter.py clean"
+git config filter.adminhash.smudge "python secret_filter.py smudge"
+```
 
 Custom skins only exist inside this map; they are not real CS2 inventory items.
 
@@ -207,6 +216,15 @@ bot を倒してコインを集め、コインで武器スキンのガチャを�
 にまとめています。保存しているのはパスワードのハッシュだけです。`<コマンド> login <パスワード>` でログインし、
 `coins 500`、`give <スキン>`、`give_all`、`knife_give <スキン>`、`boost 10`、`rate sr 12`、`reset_all confirm`、
 `showcase`、`area a|b|off` などを使います。パスワードを変えるには `<コマンド> hash <新しいパスワード>` を実行し、
-表示された数字を `ADMIN_PASSWORD_HASH` に入れます。
+表示された数字を `.env` に `AIMX_PASSWORD_HASH=<数字>` として書きます。
+
+ハッシュはリポジトリに含めません。`.env` はコミットされず、git のフィルター（`secret_filter.py`、
+`.gitattributes` で指定）がコミット時に `ADMIN_PASSWORD_HASH = 0` にし、チェックアウト時に `.env` の値を戻します。
+クローンごとに 1 回：
+
+```bash
+git config filter.adminhash.clean "python secret_filter.py clean"
+git config filter.adminhash.smudge "python secret_filter.py smudge"
+```
 
 自作スキンはこのマップ内だけのもので、CS2 の本物のインベントリアイテムではありません。
