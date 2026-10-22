@@ -1,47 +1,48 @@
 import { Instance } from "cs_script/point_script";
 
-// ===== 調整用パラメータ =====
+// ===== Tuning =====
 const BOT_COUNT  = 6;
-const STEP_SIZE  = 20;    // 1 歩あたりの距離（ユニット。プレイヤーの幅は約 32）
+const STEP_SIZE  = 20;    // distance of one step (units; a player is about 32 wide)
 const MIN_STEPS  = 1;
 const MAX_STEPS  = 8;
-const MOVE_SPEED = 150;   // 移動速度（ユニット/秒）
-const PAUSE      = 0.5;   // 移動と移動の間に止まる秒数
-const LEASH      = 160;   // スポーン地点から離れられる最大距離。超えたら引き返す
+const MOVE_SPEED = 150;   // movement speed (units/second)
+const PAUSE      = 0.5;   // seconds to stand still between moves
+const LEASH      = 160;   // furthest a bot may get from its spawn spot; it turns back beyond that
 const TICK       = 1 / 64;
 
 const cmds = [
-  "sv_cheats 1",                       // bot_stop / bot_dont_shoot に必要
+  "sv_cheats 1",                       // needed by bot_stop / bot_dont_shoot
   "mp_do_warmup_period 0", "mp_warmuptime 0",
   "mp_team_intro_time 0", "mp_freezetime 0",
   "mp_ignore_round_win_conditions 1", "mp_roundtime 60",
   "mp_respawn_on_death_t 1", "mp_respawn_on_death_ct 1",
-  // プレイヤーは T、bot は全員 CT
+  // The player is on T, every bot on CT
   "mp_force_assign_teams 1", "mp_humanteam t",
   "mp_autoteambalance 0", "mp_limitteams 0",
   "bot_join_team ct", "bot_quota_mode normal", `bot_quota ${BOT_COUNT}`,
-  "mp_randomspawn 3",                  // CT（bot）だけランダムにスポーン
-  // bot は撃たず、自分では動かない（移動は下のスクリプトで制御）
+  "mp_randomspawn 3",                  // random spawns for CT (the bots) only
+  // Bots never shoot and don't move on their own (this script moves them)
   "bot_dont_shoot 1", "bot_stop 1",
-  // エイム練習用の定番設定
+  // Usual aim-training settings
   "sv_infinite_ammo 1", "mp_buy_anywhere 1", "mp_buytime 9999",
   "mp_startmoney 16000",
-  // 死んだ bot は手榴弾・キットを落とさない。銃は落とす（落ちた銃は aim_gacha.js がすぐ消す）。
-  // mp_death_drop_gun 0 は使わない：これを 0 にすると、プレイヤー以外が出した銃（抽選 AK・展示 AK）まで
-  // 出した直後にゲームが消してしまう
+  // Dead bots drop no grenades or kits. They do drop their gun (aim_gacha.js removes it right away).
+  // Don't use mp_death_drop_gun 0: it also makes the game delete guns that no player dropped
+  // (rolled AKs, showcase AKs) right after they appear.
   "mp_death_drop_gun 1", "mp_death_drop_grenade 0", "mp_death_drop_defuser 0",
-  // Hammer に置いた銃（抽選 AK の型 gacha_ak_src）を消さない
+  // Keep the guns placed in Hammer (the template sources such as gacha_ak_src)
   "mp_weapons_allow_map_placed 1",
-  // ナイフも落とせるようにする（抽選ナイフを持ち替えさせるのに使う）
+  // Knives can be dropped too (used to hand over gacha knives)
   "mp_drop_knife_enable 1",
-  // 床に落ちた銃の自動削除を切る（抽選 AK・展示 AK が消えないように）
+  // No automatic cleanup of guns on the floor (so rolled and showcase guns stay)
   "weapon_auto_cleanup_time 0", "weapon_max_before_cleanup 0",
-  // ラウンドを一度リスタート：設定を反映させ、インベントリ読み込み後にプレイヤーを再スポーンさせる（しないと購入した銃が公式デフォルトスキンになる）。
-  // ショーケースの壁はラウンドのクリーンアップ後に aim_gacha.js が並べ直すので影響なし。
+  // Restart the round once: applies the settings and respawns the player after the inventory has
+  // loaded (otherwise bought guns get the default skin). The showcase walls are rebuilt by
+  // aim_gacha.js after the round cleanup, so they are not affected.
   "mp_restartgame 1",
 ];
 
-// ===== API アダプター層：コンソールに「関数ではない」系のエラーが出たら、ここだけ直す =====
+// ===== API adapter: if the console reports "is not a function" errors, fix them here only =====
 const now     = () => Instance.GetGameTime();
 const getPos  = (p) => p.GetAbsOrigin();
 const getYaw  = (p) => p.GetEyeAngles().yaw;
@@ -54,9 +55,9 @@ function getBotPawns() {
   });
 }
 const getVel = (p) => p.GetAbsVelocity();
-const setVel = (p, v) => p.Teleport({ velocity: v });   // 速度だけ渡し、座標は変えない
+const setVel = (p, v) => p.Teleport({ velocity: v });   // velocity only, the position is unchanged
 
-// ===== 移動ロジック =====
+// ===== Movement =====
 const states = new Map();
 const randInt = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
 const dist2D  = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -66,16 +67,17 @@ function newState(p, t) {
   const rad = (getYaw(p) * Math.PI) / 180;
   return {
     home: { ...pos }, last: { ...pos },
-    ax: -Math.sin(rad), ay: Math.cos(rad),   // bot から見た「左」方向
+    ax: -Math.sin(rad), ay: Math.cos(rad),   // the bot's "left"
     dir: { x: 0, y: 0 }, remaining: 0, pauseUntil: t + PAUSE,
   };
 }
 
 function startMove(s) {
-  let side = Math.random() < 0.5 ? 1 : -1;            // 1=左, -1=右
+  let side = Math.random() < 0.5 ? 1 : -1;            // 1 = left, -1 = right
   let dist = randInt(MIN_STEPS, MAX_STEPS) * STEP_SIZE;
   const offset = (s.last.x - s.home.x) * s.ax + (s.last.y - s.home.y) * s.ay;
-  // 起点から LEASH 以上離れないように：足りなければ逆方向へ、それでも足りなければ距離を縮める
+  // Stay within LEASH of the spawn spot: turn around if there isn't room, and shorten the move
+  // if there still isn't
   const room = (sd) => LEASH - sd * offset;
   if (room(side) < dist && room(-side) > room(side)) side = -side;
   dist = Math.max(STEP_SIZE, Math.min(dist, room(side)));
@@ -91,33 +93,33 @@ function think() {
     const k = keyOf(p);
     seen.add(k);
     const pos = getPos(p);
-    const vz = getVel(p).z;           // 垂直速度は保持して重力を正常に保つ
+    const vz = getVel(p).z;           // keep the vertical speed so gravity still works
     let s = states.get(k);
 
-    // 初登場、またはリスポーン直後（位置が急に変わった）→ 現在位置を新しい起点にする
+    // First seen, or just respawned (the position jumped): the current position is the new home
     if (!s || dist2D(pos, s.last) > 64) {
       s = newState(p, t);
       s.stuck = 0;
       states.set(k, s);
     }
 
-    // 実際に歩いた距離だけ残り距離を減らす
+    // Count down only the distance actually walked
     if (s.remaining > 0) {
       const moved = (pos.x - s.last.x) * s.dir.x + (pos.y - s.last.y) * s.dir.y;
       s.remaining -= Math.max(moved, 0);
       s.stuck = moved < 0.5 ? s.stuck + 1 : 0;
-      if (s.remaining <= 0 || s.stuck > 8) {    // 歩き終わった、または壁に引っかかった
+      if (s.remaining <= 0 || s.stuck > 8) {    // done, or stuck against a wall
         s.remaining = 0;
         s.pauseUntil = t + PAUSE;
       }
     }
     s.last = { ...pos };
 
-    if (!botsMove) { s.remaining = 0; setVel(p, { x: 0, y: 0, z: vz }); continue; }   // 停止モード
+    if (!botsMove) { s.remaining = 0; setVel(p, { x: 0, y: 0, z: vz }); continue; }   // stopped mode
 
     if (s.remaining <= 0) {
       if (t >= s.pauseUntil) startMove(s);
-      else { setVel(p, { x: 0, y: 0, z: vz }); continue; }   // 停止中はブレーキをかける
+      else { setVel(p, { x: 0, y: 0, z: vz }); continue; }   // brake while pausing
     }
 
     setVel(p, { x: s.dir.x * MOVE_SPEED, y: s.dir.y * MOVE_SPEED, z: vz });
@@ -127,25 +129,25 @@ function think() {
   Instance.SetNextThink(t + TICK);
 }
 
-// ===== bot のランダムスポーン範囲 =====
-// bot がスポーンしたら、範囲内のランダムな床の上へテレポートする。
-// 範囲の決め方（上が優先）：
-//   1. ゲーム中にコンソールで決めた範囲（下の bot_area_a / bot_area_b。マップを読み直すと消える）
-//   2. Hammer に info_target を 2 つ置き、名前を bot_area_a / bot_area_b にする（向かい合う角）
-// どちらもなければ、今まで通り CT スポーン地点に出る。
-// 範囲はゲーム中にコンソールでも決められる（aim_gacha.js の管理コマンド、ログイン後）：
-//   area a / area b   今立っている位置を角にする（その場で反映）
-//   area off          範囲を使わない
-//   area              今の範囲を表示
+// ===== Random bot spawn area =====
+// When a bot spawns it is teleported onto random floor inside the area.
+// Where the area comes from (first one wins):
+//   1. an area set in game with the admin console command (below; gone when the map reloads)
+//   2. two info_targets in Hammer named bot_area_a / bot_area_b (opposite corners)
+// With neither, bots spawn at the CT spawns as usual.
+// In game (aim_gacha.js admin command, after logging in):
+//   area a / area b   use where you stand as a corner (applies right away)
+//   area off          don't use an area
+//   area              show the current area
 const AREA_ENT_A   = "bot_area_a";
 const AREA_ENT_B   = "bot_area_b";
-const FRONT_CHANCE = 0.65;  // 範囲の前半（プレイヤーに近い側）に出る確率
-const BOT_GAP      = 64;    // bot 同士の最低間隔（ユニット）
-const SPAWN_TRIES  = 30;    // 場所探しの試行回数。全部ダメならスポーン地点のまま
-const HULL = { mins: { x: -16, y: -16, z: 0 }, maxs: { x: 16, y: 16, z: 72 } };   // プレイヤーの当たり判定
+const FRONT_CHANCE = 0.65;  // chance to spawn in the half of the area nearer to the player
+const BOT_GAP      = 64;    // minimum distance between bots (units)
+const SPAWN_TRIES  = 30;    // tries to find a spot; if all fail, the bot stays at its spawn
+const HULL = { mins: { x: -16, y: -16, z: 0 }, maxs: { x: 16, y: 16, z: 72 } };   // player collision box
 
 let areaOff = false;
-/** コンソールで決めた範囲（マップを読み直すと消える） */
+/** Area set with the console (gone when the map reloads) */
 let cmdArea = null;
 
 function currentArea() {
@@ -156,18 +158,18 @@ function currentArea() {
   return null;
 }
 
-// 範囲内のランダムな地点から真下に当たり判定を落とし、立てる床を探す
+// Drop the player collision box straight down from a random point in the area to find floor
 function randomSpot(area, self) {
   const minX = Math.min(area.a.x, area.b.x), maxX = Math.max(area.a.x, area.b.x);
   const minY = Math.min(area.a.y, area.b.y), maxY = Math.max(area.a.y, area.b.y);
   const top = Math.max(area.a.z, area.b.z) + 64, bottom = Math.min(area.a.z, area.b.z) - 64;
   const others = getBotPawns().filter((p) => p !== self).map(getPos);
 
-  // 前半（プレイヤーに近い側）に FRONT_CHANCE、後半に残りの確率で出る。
-  // 「奥行き」は、プレイヤーから範囲の中心へ向かう方向に近いほうの軸（X か Y）。
+  // FRONT_CHANCE of spawns go to the front half (nearer to the player), the rest to the back half.
+  // "Depth" is the axis (X or Y) closer to the direction from the player to the area's center.
   const me = humanPawn();
   const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-  let depthX = true, nearLow = true;   // 奥行きの軸と、プレイヤーに近いのが小さい側か
+  let depthX = true, nearLow = true;   // the depth axis, and whether its low side is nearer to the player
   if (me) {
     const pp = getPos(me);
     depthX = Math.abs(cx - pp.x) >= Math.abs(cy - pp.y);
@@ -177,14 +179,14 @@ function randomSpot(area, self) {
     if (!depth || !me) return lo + Math.random() * (hi - lo);
     const front = Math.random() < FRONT_CHANCE;
     const mid = (lo + hi) / 2;
-    const lowHalf = front === nearLow;   // 手前が小さい側なら、前半＝小さい半分
+    const lowHalf = front === nearLow;   // if the near side is the low side, the front half is the low half
     return lowHalf ? lo + Math.random() * (mid - lo) : mid + Math.random() * (hi - mid);
   };
 
   for (let i = 0; i < SPAWN_TRIES; i++) {
     const x = pick(minX, maxX, depthX), y = pick(minY, maxY, !depthX);
     const tr = Instance.TraceBox({ ...HULL, start: { x, y, z: top }, end: { x, y, z: bottom }, ignorePlayers: true });
-    if (!tr.didHit || tr.startedInSolid) continue;     // 床がない／壁の中
+    if (!tr.didHit || tr.startedInSolid) continue;     // no floor / inside a wall
     const spot = { x, y, z: tr.end.z + 1 };
     if (others.some((o) => dist2D(o, spot) < BOT_GAP)) continue;
     return spot;
@@ -197,10 +199,10 @@ function moveBotIntoArea(p) {
   if (!area || !p.IsValid() || !p.IsAlive()) return;
   const spot = randomSpot(area, p);
   if (spot) setPos(p, spot);
-  else Instance.Msg("[aim] bot の置き場所が範囲内に見つからなかった（範囲が狭い／床がない？）");
+  else Instance.Msg("[aim] no free spot for a bot in the spawn area (area too small, or no floor?)");
 }
 
-// スポーン直後はゲーム側が位置を決めるので、少し待ってから動かす
+// Right after spawning the game places the bot itself, so wait a moment before moving it
 Instance.OnPlayerReset(({ player }) => {
   const c = player.GetPlayerController();
   if (!c || !c.IsBot()) return;
@@ -220,8 +222,8 @@ const fmtPos = (v) => `{ x: ${Math.round(v.x)}, y: ${Math.round(v.y)}, z: ${Math
 
 function printArea() {
   const area = currentArea();
-  if (!area) { Instance.Msg("[aim] bot スポーン範囲：なし（CT スポーン地点に出る）"); return; }
-  Instance.Msg(`[aim] bot スポーン範囲：${fmtPos(area.a)} 〜 ${fmtPos(area.b)}`);
+  if (!area) { Instance.Msg("[aim] bot spawn area: none (bots use the CT spawns)"); return; }
+  Instance.Msg(`[aim] bot spawn area: ${fmtPos(area.a)} - ${fmtPos(area.b)}`);
 }
 
 function setCorner(key) {
@@ -231,40 +233,40 @@ function setCorner(key) {
   areaOff = false;
   cmdArea = cmdArea ? { ...cmdArea, [key]: pos } : { a: pos, b: pos };
   if (cmdArea.a === cmdArea.b) {
-    Instance.Msg(`[aim] 角 ${key} を ${fmtPos(pos)} にした。もう一方の角で area ${key === "a" ? "b" : "a"} を打つ`);
+    Instance.Msg(`[aim] corner ${key} set to ${fmtPos(pos)}; go to the other corner and run area ${key === "a" ? "b" : "a"}`);
     return;
   }
   printArea();
-  // 角が両方決まったので、今いる bot をすぐ範囲内へ並べ直す
+  // Both corners are set: move the current bots into the area right away
   for (const b of getBotPawns()) moveBotIntoArea(b);
 }
 
-// コンソールコマンドは aim_gacha.js の管理コマンド（パスワード付き）から RunScriptInput で呼ばれる
+// These are called with RunScriptInput by the admin console command (password-locked) in aim_gacha.js
 Instance.OnScriptInput("bot_area_a", () => setCorner("a"));
 Instance.OnScriptInput("bot_area_b", () => setCorner("b"));
 Instance.OnScriptInput("bot_area_off", () => { areaOff = true; printArea(); });
 Instance.OnScriptInput("bot_area", () => printArea());
 
-// ===== bot の移動 ON/OFF =====
-// ボタン：OnPressed → main_script → RunScriptInput → bot_move（押すたびに 移動／停止 を切り替え）
-// 状態は point_worldtext「bot_move_text」に表示（任意）
+// ===== Bots moving / stopped =====
+// Button: OnPressed -> main_script -> RunScriptInput -> bot_move (each press switches moving / stopped)
+// The state is shown on the point_worldtext bot_move_text (optional)
 let botsMove = true;
 
 function updateBotMoveText() {
   Instance.EntFireAtName({ name: "bot_move_text", input: "SetMessage", value: botsMove ? "MOVING" : "STOPPED" });
-  // MOVING は青、STOPPED は黒
+  // MOVING in blue, STOPPED in black
   Instance.EntFireAtName({ name: "bot_move_text", input: "SetTextColor", value: botsMove ? "60 120 255" : "0 0 0" });
 }
 
 Instance.OnScriptInput("bot_move", () => {
   botsMove = !botsMove;
   updateBotMoveText();
-  Instance.Msg(`[aim] bot は${botsMove ? "移動" : "停止"}`);
+  Instance.Msg(`[aim] bots ${botsMove ? "moving" : "stopped"}`);
 });
 
-// ===== bot の数 =====
-// ボタン：OnPressed → main_script → RunScriptInput → bot_add（1 体増やす）／ bot_remove（1 体減らす）
-// 1〜10 体。数は point_worldtext「bot_count_text」に表示（任意）
+// ===== Number of bots =====
+// Buttons: OnPressed -> main_script -> RunScriptInput -> bot_add (one more) / bot_remove (one fewer)
+// 1 to 10 bots. The number is shown on the point_worldtext bot_count_text (optional)
 const BOT_MIN = 1, BOT_MAX = 10;
 let botCount = BOT_COUNT;
 
@@ -276,7 +278,7 @@ function setBotCount(n) {
   botCount = Math.max(BOT_MIN, Math.min(BOT_MAX, n));
   Instance.ServerCommand(`bot_quota ${botCount}`);
   updateBotCountText();
-  Instance.Msg(`[aim] bot の数: ${botCount}`);
+  Instance.Msg(`[aim] bots: ${botCount}`);
 }
 
 Instance.OnScriptInput("bot_add", () => setBotCount(botCount + 1));
@@ -284,14 +286,14 @@ Instance.OnScriptInput("bot_remove", () => setBotCount(botCount - 1));
 
 Instance.OnRoundStart(() => Instance.Delay(0.5).then(() => { updateBotMoveText(); updateBotCountText(); }));
 
-// ===== 動く壁 =====
-// Hammer：壁を func_movelinear にして名前を moving_wall に。Move Distance と Start Position は
-// 下の WALL_DISTANCE / WALL_START と同じ値にする。
-// ボタン：OnPressed → main_script → RunScriptInput → wall_left ／ wall_right（1 回押すと WALL_STEP 動く）
+// ===== Moving wall =====
+// Hammer: make the wall a func_movelinear named moving_wall, with Move Distance and Start Position
+// equal to WALL_DISTANCE / WALL_START below.
+// Buttons: OnPressed -> main_script -> RunScriptInput -> wall_left / wall_right (WALL_STEP per press)
 const WALL_NAME     = "moving_wall";
-const WALL_DISTANCE = 1000;  // Hammer の Move Distance（ユニット）
-const WALL_START    = 0.5;   // Hammer の Start Position（0 = 起点、1 = 終点）
-const WALL_STEP     = 50;    // 1 回で動く距離（ユニット）
+const WALL_DISTANCE = 1000;  // Hammer's Move Distance (units)
+const WALL_START    = 0.5;   // Hammer's Start Position (0 = start, 1 = end)
+const WALL_STEP     = 50;    // distance per press (units)
 
 let wallPos = WALL_START;
 
@@ -302,10 +304,10 @@ function moveWall(sign) {
 
 Instance.OnScriptInput("wall_left", () => moveWall(-1));
 Instance.OnScriptInput("wall_right", () => moveWall(1));
-// ラウンドの再開で壁は Start Position に戻るので、覚えている位置も戻す
+// A round restart puts the wall back at its Start Position, so reset the remembered position too
 Instance.OnRoundStart(() => { wallPos = WALL_START; });
 
-// ===== 起動 =====
+// ===== Start =====
 Instance.OnActivate(() => {
   for (const c of cmds) Instance.ServerCommand(c);
   Instance.SetThink(think);
@@ -315,5 +317,6 @@ Instance.OnActivate(() => {
   updateBotCountText();
 });
 
-// プレイヤーを T に入れるのは上の mp_force_assign_teams 1 + mp_humanteam t に任せ、スクリプトの JoinTeam は使わない：
-// プレイヤーがアクティブになった直後に強制でチームを変えると、インベントリ読み込みより先になり、購入した銃が公式デフォルトスキンになる。
+// Putting the player on T is left to mp_force_assign_teams 1 + mp_humanteam t above; the script doesn't
+// use JoinTeam: forcing the team right after the player becomes active happens before the inventory
+// has loaded, and bought guns then get the default skin.
