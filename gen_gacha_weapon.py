@@ -56,15 +56,17 @@ PRESETS = {
 
 # id -> special treatment
 #   preset: use another rarity's preset (e.g. "c" = no effects)
-#   relief: which color becomes raised ("red", "gold")
+#   relief: which color becomes raised ("red", "gold", "white"); relief_strength: 1 = normal
 #   fxmask: where the effects of the preset go ("colored" = saturated, non-gold colors)
 #   pearl:  a soft pearl sheen on one color only ("red"), like the knives' _pl tier
-#   irid:   rainbow sheen strength instead of the preset's (0 = none)
+#   irid / glitter: rainbow sheen / glitter strength instead of the preset's (0 = none)
+#   chrome: one color becomes mirror-polished metal ("white" = silver inlay); needs a metal preset
 SPECIAL = {
     "l_m4a4_darklycoris": {"preset": "c", "pearl": "red"},
-    "l_m4a1_s_cathedral_outlined": {"relief": "gold", "fxmask": "colored", "irid": 0},
+    "l_m4a1_s_cathedral_outlined": {"relief": "gold", "irid": 0, "glitter": 0},
     "l_awp_silverundertow": {"irid": 0.175},
     "l_awp_tidalpatina": {"irid": 0.175},
+    "ur_awp_cobaltflux": {"chrome": "white"},
 }
 
 
@@ -163,14 +165,22 @@ def color_mask(rgb, which):
     if which == "colored":  # saturated colors that aren't gold (e.g. stained glass)
         gold = (h > 25) & (h < 60)
         return np.clip((s - 0.4) / 0.2, 0, 1) * np.clip((v - 0.15) / 0.15, 0, 1) * ~gold
+    if which == "white":  # bright, nearly colorless strokes
+        return np.clip((0.35 - s) / 0.15, 0, 1) * np.clip((v - 0.7) / 0.12, 0, 1)
     raise ValueError(which)
 
 
-def preset_maps(src, p, metal_path, rough_path, mask_path, fx_where=None):
+def preset_maps(src, p, metal_path, rough_path, mask_path, fx_where=None, chrome=None):
     rgb = load_rgb(src, MAP_SIZE)
     lum = rgb @ np.array([0.2126, 0.7152, 0.0722], np.float32)
-    save_gray(p["metal"] + p["metal_c"] * (lum - 0.5), metal_path)
-    save_gray(p["rough"] - p["rough_c"] * (lum - 0.5), rough_path)
+    metal = p["metal"] + p["metal_c"] * (lum - 0.5)
+    rough = p["rough"] - p["rough_c"] * (lum - 0.5)
+    if chrome:  # that color becomes mirror-polished metal (like inlaid silver)
+        m = ndimage.gaussian_filter(color_mask(rgb, chrome), 0.8)
+        metal = metal * (1 - m) + 1.0 * m
+        rough = rough * (1 - m) + 0.04 * m
+    save_gray(metal, metal_path)
+    save_gray(rough, rough_path)
     if fx_where:
         mask = ndimage.gaussian_filter(ndimage.grey_dilation(color_mask(rgb, fx_where), size=3), 1.0)
     else:
@@ -278,6 +288,8 @@ def main():
         p = dict(PRESETS["c" if plain else special.get("preset", rarity)])
         if "irid" in special:
             p["irid"] = special["irid"]
+        if "glitter" in special:
+            p["glitter"] = special["glitter"]
         lists[rarity_name[rarity]].append(f"{key}:{style}")
 
         outs = [MAP_DIR / f"{sid}_{n}.png" for n in ("metal", "rough", "fxmask")]
@@ -289,9 +301,10 @@ def main():
                     or "_color" in o.name or "_normal" in o.name)
         if stale:
             if p["metal"] >= 0:
-                preset_maps(tex, p, outs[0], outs[1], outs[2], special.get("fxmask"))
+                preset_maps(tex, p, outs[0], outs[1], outs[2], special.get("fxmask"), special.get("chrome"))
             if special.get("relief"):
-                relief_maps(tex, special["relief"], MAP_DIR / f"{sid}_color.png", MAP_DIR / f"{sid}_normal.png")
+                relief_maps(tex, special["relief"], MAP_DIR / f"{sid}_color.png", MAP_DIR / f"{sid}_normal.png",
+                            special.get("relief_strength", 1.0))
             if special.get("pearl"):
                 rgb = load_rgb(tex, MAP_SIZE)
                 mask = ndimage.gaussian_filter(ndimage.grey_dilation(color_mask(rgb, special["pearl"]), size=3), 1.0)

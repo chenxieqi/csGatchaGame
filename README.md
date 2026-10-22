@@ -16,7 +16,8 @@ Everything runs on CS2's `cs_script` (`point_script`) JavaScript API.
 ### Features
 
 - **Aim training** – strafing bots on the CT side (`aimbot_map.js`), spawning at random inside an
-  area. You play on T.
+  area (65% in the half nearer to you). You play on T. Buttons add / remove bots (1 – 10), switch
+  them between moving and standing still, and slide a wall left or right.
 - **Coins** – every bot you kill gives 1 coin. A roll costs `COST` coins (1).
 - **Gacha** – the gacha button rolls a gun skin (AK-47, M4A4, M4A1-S, AWP, Desert Eagle, USP-S).
   The skinned gun drops at the drop point and glows in the rarity color.
@@ -33,13 +34,14 @@ Everything runs on CS2's `cs_script` (`point_script`) JavaScript API.
   | Legendary | 0.5% | 20% | red | metallic + rainbow sheen + glitter |
 
   Texture names ending in `_n` keep their rarity but get no material effects.
-- **Knives** – every 20 rolls of Super Rare or better earn a knife ticket; the knife button draws a
+- **Knives** – one free knife ticket on the first play, then one every 10 rolls of Super Rare or better; the knife button draws a
   knife skin you don't own yet (5 knife types, 30 skins). The knife is switched to the right type
   with the `ChangeSubclass` input, so it has that knife's animations.
 - **Showcase walls** – each owned skin is shown on the gun wall / knife wall (Legendary guns are
   always shown). Shoot one with any gun to equip it: the gun goes into its slot (rifle or pistol);
   your own gun is kept aside and comes back when you shoot the same skin again.
 - **Shop** – a button named after a Legendary skin buys it for `BUY_PRICE` coins (500).
+- **Latest display** – the skin you got most recently is shown on its own stand; shoot it to equip it.
 - **Saved progress** – skins, knives, coins, kills, knife tickets and the rate-up level are saved
   (the equipped knife only for the session).
 
@@ -92,9 +94,12 @@ Not included: the Hammer map, skin textures, decompiled Valve meshes and all com
 | `point_template` + weapon | `gacha_tpl_<m4a4\|m4a1_s\|awp\|deagle\|usp_s>` / `gacha_src_…` | source of the other guns |
 | `info_target` | `gacha_drop_point` | where rolled guns drop |
 | `info_target` × 2 | `bot_area_a`, `bot_area_b` | opposite corners of the bot spawn area |
+| `info_target` | `latest_display` | where the latest skin is shown |
+| `func_movelinear` | `moving_wall` | Move Distance / Start Position = `WALL_DISTANCE` / `WALL_START` in `aimbot_map.js` |
 | `func_button` | any | `OnPressed` → `gacha_script` → `RunScriptInput` → `gacha` / `boost` / `knife` / `clear_weapons` |
+| `func_button` | any | `OnPressed` → `main_script` → `RunScriptInput` → `bot_move` / `bot_add` / `bot_remove` / `wall_left` / `wall_right` |
 | `func_button` | `<skin>_button` | `RunScriptInput` → `buy` (Legendary skins only) |
-| `point_worldtext` | `coins_text`, `result_text`, `rates_text`, `boost_text`, `knife_text`, `knife_count`, `count_c` … `count_l` | status texts |
+| `point_worldtext` | `coins_text`, `result_text`, `rates_text`, `boost_text`, `knife_text`, `knife_count`, `count_c` … `count_l`, `latest_text`, `bot_move_text`, `bot_count_text` | status texts |
 | `point_worldtext` | `<skin>_text` | Legend / skin name / Owned or Buy |
 | `prop_dynamic` × skins | any | model `maps/gacha_ak/…`, `maps/gacha_weapon/…` or `maps/gacha_knife/…`; marks that skin's place on a wall |
 
@@ -130,7 +135,8 @@ bot を倒してコインを集め、コインで武器スキンのガチャを�
 
 ### 機能
 
-- **エイム練習** – CT 側で左右に動く bot（`aimbot_map.js`）。指定範囲内のランダムな位置に出現。プレイヤーは T 側。
+- **エイム練習** – CT 側で左右に動く bot（`aimbot_map.js`）。指定範囲内のランダムな位置に出現（手前半分に 65%）。プレイヤーは T 側。
+  ボタンで bot の増減（1〜10 体）、移動／停止の切り替え、壁の左右移動ができます。
 - **コイン** – bot を 1 体倒すごとに 1 コイン。ガチャ 1 回は `COST` コイン（1）。
 - **ガチャ** – ガチャボタンで銃スキン（AK-47、M4A4、M4A1-S、AWP、Desert Eagle、USP-S）を抽選。
   スキン付きの銃がドロップ地点に落ち、レアリティの色で光ります。
@@ -147,11 +153,12 @@ bot を倒してコインを集め、コインで武器スキンのガチャを�
   | Legendary | 0.5% | 20% | 赤 | メタリック＋虹色の光沢＋ラメ |
 
   テクスチャ名が `_n` で終わるものはレアリティはそのままで、質感の特殊効果なし。
-- **ナイフ** – Super Rare 以上を 20 回引くごとにナイフチケット 1 枚。ナイフボタンで未所持のナイフスキンを
+- **ナイフ** – 初回プレイでナイフチケット 1 枚プレゼント。その後は Super Rare 以上を 10 回引くごとに 1 枚。ナイフボタンで未所持のナイフスキンを
   抽選（5 種類、30 スキン）。`ChangeSubclass` 入力でナイフの種類を切り替えるので、そのナイフのモーションになります。
 - **ショーケースの壁** – 所持スキンが銃の壁／ナイフの壁に並びます（Legendary の銃は常に表示）。
   どの銃で撃っても装備でき、ライフル枠かピストル枠に入ります。元の銃は保管され、同じスキンをもう一度撃つと戻ります。
 - **ショップ** – Legendary スキン名のボタンで、そのスキンを `BUY_PRICE` コイン（500）で購入。
+- **最新スキンの展示** – 最後に手に入れたスキンが専用の台に飾られます。撃つと装備できます。
 - **セーブ** – スキン、ナイフ、コイン、キル数、ナイフチケット、確率アップのレベルを保存
   （装備中のナイフはそのセッションのみ）。
 
@@ -204,9 +211,12 @@ bot を倒してコインを集め、コインで武器スキンのガチャを�
 | `point_template` + 武器 | `gacha_tpl_<m4a4\|m4a1_s\|awp\|deagle\|usp_s>` / `gacha_src_…` | その他の銃の元 |
 | `info_target` | `gacha_drop_point` | ガチャの銃が落ちる位置 |
 | `info_target` × 2 | `bot_area_a`、`bot_area_b` | bot の出現範囲の対角 |
+| `info_target` | `latest_display` | 最新スキンを飾る位置 |
+| `func_movelinear` | `moving_wall` | Move Distance／Start Position は `aimbot_map.js` の `WALL_DISTANCE`／`WALL_START` と同じ値 |
 | `func_button` | 任意 | `OnPressed` → `gacha_script` → `RunScriptInput` → `gacha` / `boost` / `knife` / `clear_weapons` |
+| `func_button` | 任意 | `OnPressed` → `main_script` → `RunScriptInput` → `bot_move` / `bot_add` / `bot_remove` / `wall_left` / `wall_right` |
 | `func_button` | `<スキン>_button` | `RunScriptInput` → `buy`（Legendary のみ） |
-| `point_worldtext` | `coins_text`、`result_text`、`rates_text`、`boost_text`、`knife_text`、`knife_count`、`count_c` … `count_l` | 状態表示 |
+| `point_worldtext` | `coins_text`、`result_text`、`rates_text`、`boost_text`、`knife_text`、`knife_count`、`count_c` … `count_l`、`latest_text`、`bot_move_text`、`bot_count_text` | 状態表示 |
 | `point_worldtext` | `<スキン>_text` | Legend／スキン名／Owned または Buy |
 | `prop_dynamic` × スキン数 | 任意 | モデル `maps/gacha_ak/…`、`maps/gacha_weapon/…`、`maps/gacha_knife/…`。壁のそのスキンの位置を示す |
 

@@ -1,10 +1,10 @@
 import { Instance } from "cs_script/point_script";
 
 // ===== 調整用パラメータ =====
-const BOT_COUNT  = 5;
+const BOT_COUNT  = 6;
 const STEP_SIZE  = 20;    // 1 歩あたりの距離（ユニット。プレイヤーの幅は約 32）
-const MIN_STEPS  = 2;
-const MAX_STEPS  = 6;
+const MIN_STEPS  = 1;
+const MAX_STEPS  = 8;
 const MOVE_SPEED = 150;   // 移動速度（ユニット/秒）
 const PAUSE      = 0.5;   // 移動と移動の間に止まる秒数
 const LEASH      = 160;   // スポーン地点から離れられる最大距離。超えたら引き返す
@@ -73,9 +73,12 @@ function newState(p, t) {
 
 function startMove(s) {
   let side = Math.random() < 0.5 ? 1 : -1;            // 1=左, -1=右
-  const dist = randInt(MIN_STEPS, MAX_STEPS) * STEP_SIZE;
+  let dist = randInt(MIN_STEPS, MAX_STEPS) * STEP_SIZE;
   const offset = (s.last.x - s.home.x) * s.ax + (s.last.y - s.home.y) * s.ay;
-  if (Math.abs(offset + side * dist) > LEASH) side = -side;   // 離れすぎたら逆方向へ
+  // 起点から LEASH 以上離れないように：足りなければ逆方向へ、それでも足りなければ距離を縮める
+  const room = (sd) => LEASH - sd * offset;
+  if (room(side) < dist && room(-side) > room(side)) side = -side;
+  dist = Math.max(STEP_SIZE, Math.min(dist, room(side)));
   s.dir = { x: s.ax * side, y: s.ay * side };
   s.remaining = dist;
 }
@@ -110,6 +113,8 @@ function think() {
     }
     s.last = { ...pos };
 
+    if (!botsMove) { s.remaining = 0; setVel(p, { x: 0, y: 0, z: vz }); continue; }   // 停止モード
+
     if (s.remaining <= 0) {
       if (t >= s.pauseUntil) startMove(s);
       else { setVel(p, { x: 0, y: 0, z: vz }); continue; }   // 停止中はブレーキをかける
@@ -134,6 +139,7 @@ function think() {
 //   area              今の範囲を表示
 const AREA_ENT_A   = "bot_area_a";
 const AREA_ENT_B   = "bot_area_b";
+const FRONT_CHANCE = 0.65;  // 範囲の前半（プレイヤーに近い側）に出る確率
 const BOT_GAP      = 64;    // bot 同士の最低間隔（ユニット）
 const SPAWN_TRIES  = 30;    // 場所探しの試行回数。全部ダメならスポーン地点のまま
 const HULL = { mins: { x: -16, y: -16, z: 0 }, maxs: { x: 16, y: 16, z: 72 } };   // プレイヤーの当たり判定
@@ -157,8 +163,26 @@ function randomSpot(area, self) {
   const top = Math.max(area.a.z, area.b.z) + 64, bottom = Math.min(area.a.z, area.b.z) - 64;
   const others = getBotPawns().filter((p) => p !== self).map(getPos);
 
+  // 前半（プレイヤーに近い側）に FRONT_CHANCE、後半に残りの確率で出る。
+  // 「奥行き」は、プレイヤーから範囲の中心へ向かう方向に近いほうの軸（X か Y）。
+  const me = humanPawn();
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  let depthX = true, nearLow = true;   // 奥行きの軸と、プレイヤーに近いのが小さい側か
+  if (me) {
+    const pp = getPos(me);
+    depthX = Math.abs(cx - pp.x) >= Math.abs(cy - pp.y);
+    nearLow = depthX ? pp.x < cx : pp.y < cy;
+  }
+  const pick = (lo, hi, depth) => {
+    if (!depth || !me) return lo + Math.random() * (hi - lo);
+    const front = Math.random() < FRONT_CHANCE;
+    const mid = (lo + hi) / 2;
+    const lowHalf = front === nearLow;   // 手前が小さい側なら、前半＝小さい半分
+    return lowHalf ? lo + Math.random() * (mid - lo) : mid + Math.random() * (hi - mid);
+  };
+
   for (let i = 0; i < SPAWN_TRIES; i++) {
-    const x = minX + Math.random() * (maxX - minX), y = minY + Math.random() * (maxY - minY);
+    const x = pick(minX, maxX, depthX), y = pick(minY, maxY, !depthX);
     const tr = Instance.TraceBox({ ...HULL, start: { x, y, z: top }, end: { x, y, z: bottom }, ignorePlayers: true });
     if (!tr.didHit || tr.startedInSolid) continue;     // 床がない／壁の中
     const spot = { x, y, z: tr.end.z + 1 };
@@ -221,12 +245,74 @@ Instance.OnScriptInput("bot_area_b", () => setCorner("b"));
 Instance.OnScriptInput("bot_area_off", () => { areaOff = true; printArea(); });
 Instance.OnScriptInput("bot_area", () => printArea());
 
+// ===== bot の移動 ON/OFF =====
+// ボタン：OnPressed → main_script → RunScriptInput → bot_move（押すたびに 移動／停止 を切り替え）
+// 状態は point_worldtext「bot_move_text」に表示（任意）
+let botsMove = true;
+
+function updateBotMoveText() {
+  Instance.EntFireAtName({ name: "bot_move_text", input: "SetMessage", value: botsMove ? "MOVING" : "STOPPED" });
+  // MOVING は青、STOPPED は黒
+  Instance.EntFireAtName({ name: "bot_move_text", input: "SetTextColor", value: botsMove ? "60 120 255" : "0 0 0" });
+}
+
+Instance.OnScriptInput("bot_move", () => {
+  botsMove = !botsMove;
+  updateBotMoveText();
+  Instance.Msg(`[aim] bot は${botsMove ? "移動" : "停止"}`);
+});
+
+// ===== bot の数 =====
+// ボタン：OnPressed → main_script → RunScriptInput → bot_add（1 体増やす）／ bot_remove（1 体減らす）
+// 1〜10 体。数は point_worldtext「bot_count_text」に表示（任意）
+const BOT_MIN = 1, BOT_MAX = 10;
+let botCount = BOT_COUNT;
+
+function updateBotCountText() {
+  Instance.EntFireAtName({ name: "bot_count_text", input: "SetMessage", value: `${botCount}` });
+}
+
+function setBotCount(n) {
+  botCount = Math.max(BOT_MIN, Math.min(BOT_MAX, n));
+  Instance.ServerCommand(`bot_quota ${botCount}`);
+  updateBotCountText();
+  Instance.Msg(`[aim] bot の数: ${botCount}`);
+}
+
+Instance.OnScriptInput("bot_add", () => setBotCount(botCount + 1));
+Instance.OnScriptInput("bot_remove", () => setBotCount(botCount - 1));
+
+Instance.OnRoundStart(() => Instance.Delay(0.5).then(() => { updateBotMoveText(); updateBotCountText(); }));
+
+// ===== 動く壁 =====
+// Hammer：壁を func_movelinear にして名前を moving_wall に。Move Distance と Start Position は
+// 下の WALL_DISTANCE / WALL_START と同じ値にする。
+// ボタン：OnPressed → main_script → RunScriptInput → wall_left ／ wall_right（1 回押すと WALL_STEP 動く）
+const WALL_NAME     = "moving_wall";
+const WALL_DISTANCE = 1000;  // Hammer の Move Distance（ユニット）
+const WALL_START    = 0.5;   // Hammer の Start Position（0 = 起点、1 = 終点）
+const WALL_STEP     = 50;    // 1 回で動く距離（ユニット）
+
+let wallPos = WALL_START;
+
+function moveWall(sign) {
+  wallPos = Math.max(0, Math.min(1, wallPos + sign * WALL_STEP / WALL_DISTANCE));
+  Instance.EntFireAtName({ name: WALL_NAME, input: "SetPosition", value: String(wallPos) });
+}
+
+Instance.OnScriptInput("wall_left", () => moveWall(-1));
+Instance.OnScriptInput("wall_right", () => moveWall(1));
+// ラウンドの再開で壁は Start Position に戻るので、覚えている位置も戻す
+Instance.OnRoundStart(() => { wallPos = WALL_START; });
+
 // ===== 起動 =====
 Instance.OnActivate(() => {
   for (const c of cmds) Instance.ServerCommand(c);
   Instance.SetThink(think);
   Instance.SetNextThink(now() + 1);
   printArea();
+  updateBotMoveText();
+  updateBotCountText();
 });
 
 // プレイヤーを T に入れるのは上の mp_force_assign_teams 1 + mp_humanteam t に任せ、スクリプトの JoinTeam は使わない：

@@ -250,7 +250,7 @@ let kills = 0;
 
 // Knife draws: every KNIFE_EVERY rolls of Super Rare or better earns one knife ticket,
 // spent on the knife button. Both counters are saved.
-const KNIFE_EVERY = 20;
+const KNIFE_EVERY = 10;
 const KNIFE_DELIVERY_READY = true;
 
 /** Knife skins won so far (no duplicates; saved) and the one carried this session (not saved:
@@ -285,10 +285,24 @@ function saveProgressSoon() {
 function saveProgress() {
     savePending = false;
     try {
-        Instance.SetSaveData(JSON.stringify({ inventory, boostLevel, coins, kills, knifeProgress, knifeTickets, knives }));
+        Instance.SetSaveData(JSON.stringify({ inventory, boostLevel, coins, kills, knifeProgress, knifeTickets, knives, welcomeGiven, latestSkin }));
     } catch (e) {
         Instance.Msg("[gacha] could not save progress: " + e);
     }
+}
+
+// The first time a player starts the map (no welcome flag in the save) they get one
+// free knife ticket. The flag is saved, so it happens once; reset_all keeps it.
+let welcomeGiven = false;
+
+function giveWelcomeTicket() {
+    if (welcomeGiven) return;
+    welcomeGiven = true;
+    knifeTickets++;
+    saveProgress();
+    resultMessage = "Welcome! A free knife ticket - press the knife button";
+    resultColor = RARITIES[RARITIES.length - 1].color;
+    Instance.Msg("[gacha] welcome: 1 free knife ticket");
 }
 
 function loadProgress() {
@@ -304,6 +318,8 @@ function loadProgress() {
         if (typeof data?.kills === "number") kills = Math.max(0, Math.floor(data.kills));
         if (typeof data?.knifeProgress === "number") knifeProgress = Math.max(0, Math.floor(data.knifeProgress)) % KNIFE_EVERY;
         if (typeof data?.knifeTickets === "number") knifeTickets = Math.max(0, Math.floor(data.knifeTickets));
+        welcomeGiven = data?.welcomeGiven === true;
+        if (typeof data?.latestSkin === "string") latestSkin = data.latestSkin;
         // Matched by base name, so a skin keeps counting as owned when its file gets an effect suffix
         if (Array.isArray(data?.knives)) {
             knives = [];
@@ -466,7 +482,77 @@ function refreshShowcase() {
         Instance.Msg(`[gacha] ERROR in showcase: ${e}`);
     }
     refreshKnifeWall();
+    showLatest();
 }
+
+// ---------------------------------------------------------------------------
+// "Latest" display: the skin you got most recently, glowing in its rarity color.
+// Shoot it like a wall item to equip it. Hammer: an info_target named latest_display marks where it floats
+// (its angles set the starting direction); optional point_worldtext latest_text shows
+// its name. latestSkin is "gun:<model id>" or "knife:<knife skin>", saved.
+// ---------------------------------------------------------------------------
+const LATEST_POINT = "latest_display";
+const LATEST_TEXT = "latest_text";
+
+let latestSkin = "";
+/** @type {CSWeaponBase | undefined} */
+let latestEntity = undefined;
+let latestShown = "";
+let latestBusy = false;
+
+/** @param {Entity} ent */
+function isLatestDisplay(ent) {
+    return latestEntity !== undefined && ent === latestEntity;
+}
+
+/** @param {string} key "gun:..." or "knife:..." */
+function setLatest(key) {
+    latestSkin = key;
+    saveProgress();
+    showLatest();
+}
+
+async function showLatest() {
+    if (latestBusy || !latestSkin) return;
+    if (latestShown === latestSkin && latestEntity?.IsValid()) return;
+    const point = Instance.FindEntityByName(LATEST_POINT);
+    if (!point) return;
+    latestBusy = true;
+    try {
+        const key = latestSkin;
+        if (latestEntity?.IsValid()) latestEntity.Remove();
+        latestEntity = undefined;
+        const pos = point.GetAbsOrigin();
+        const [kind, id] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
+        let color = RARITIES[RARITIES.length - 1].color, name = "";
+        /** @type {CSWeaponBase | undefined} */
+        let w = undefined;
+        if (kind === "knife") {
+            w = await makeSkinKnife(id, pos);
+            name = knifeDisplayName(id);
+        } else {
+            const info = skinOfModelId(id);
+            if (info) { color = info.rarity.color; name = `[${info.rarity.id}] ${displayName(info.skin)}`; }
+            w = await makeSkinnedWeapon(id, pos, undefined);
+        }
+        if (!w) { Instance.Msg(`[gacha] latest display: could not make ${key}`); return; }
+        w.Teleport({ position: pos, angles: point.GetAbsAngles(), velocity: { x: 0, y: 0, z: 0 } });
+        w.SetMoveType(CSMoveType.NONE);
+        Instance.EntFireAtTarget({ target: w, input: "ToggleCanBePickedUp" });
+        w.Glow(color);
+        latestEntity = w;
+        latestShown = key;
+        setText(LATEST_TEXT, `NEW\n${name}`);
+        Instance.EntFireAtName({ name: LATEST_TEXT, input: "SetTextColor", value: `${color.r} ${color.g} ${color.b}` });
+        if (latestSkin !== key) latestShown = "";  // a newer skin came in meanwhile
+    } catch (e) {
+        Instance.Msg(`[gacha] ERROR in latest display: ${e}`);
+    } finally {
+        latestBusy = false;
+    }
+    if (latestShown !== latestSkin) showLatest();
+}
+
 
 /** @typedef {import("cs_script/point_script").QAngle} QAngle */
 
@@ -737,6 +823,30 @@ function traceAk(ak, what) {
 }
 
 /**
+ * A weapon of class `cls` handed over by a bot (GiveNamedItem, then dropped), or undefined.
+ * Bots have no inventory, so it carries no stickers. The bot gets a gun of the same
+ * slot back so it doesn't pick the new one up again.
+ * @param {string} cls
+ * @param {CSGearSlot} gear
+ */
+function giveThroughBot(cls, gear) {
+    const bot = findBotPawn();
+    if (!bot) return undefined;
+    const old = bot.FindWeaponBySlot(gear);
+    if (old) bot.DestroyWeapon(old);
+    bot.GiveNamedItem(cls, false);
+    const w = bot.FindWeaponBySlot(gear);
+    if (!(w instanceof CSWeaponBase)) {
+        Instance.Msg(`[gacha] the bot got no ${cls}`);
+        return undefined;
+    }
+    handedOverAks.add(w);
+    bot.DropWeapon(w);
+    bot.GiveNamedItem(gear === CSGearSlot.PISTOL ? "weapon_usp_silencer" : "weapon_m4a1", false);
+    return w;
+}
+
+/**
  * Gives `donor` an AK and drops it right away. Returns the new AK, or undefined.
  * @param {CSPlayerPawn} donor
  * @param {boolean} isBot
@@ -843,7 +953,7 @@ function forwardFromAngles(a) {
  * @param {Vector} dir unit vector
  */
 function nearestDisplayAk(from, dir) {
-    return nearestDisplay(displayAks, from, dir, AK_BODY_FROM, AK_BODY_TO, AK_BODY_STEP);
+    return nearestDisplay(displayAks, from, dir, AK_BODY_FROM, AK_BODY_TO, AK_BODY_STEP, SHOT_HIT_RADIUS);
 }
 
 // A knife runs from about -6 (pommel) to +12 (tip) along its own forward axis
@@ -851,16 +961,22 @@ const KNIFE_BODY_FROM = -6, KNIFE_BODY_TO = 12, KNIFE_BODY_STEP = 2;
 const KNIFE_HIT_RADIUS = 5;
 
 /**
- * The display weapon in `wall` whose body passes closest to the shot line, and that distance.
+ * The display weapon in `wall` the shot hits: of those whose body passes within `radius`
+ * of the shot line, the one nearest to the shooter, as long as no wall stands in between.
+ * Returns its id, how far the line passed from it (dist) and how far away it is (along).
  * @param {Map<string, CSWeaponBase>} wall
  * @param {Vector} from
  * @param {Vector} dir unit vector
  * @param {number} bodyFrom
  * @param {number} bodyTo
  * @param {number} step
+ * @param {number} radius
+ * @param {Entity} [shooter] ignored by the wall check
  */
-function nearestDisplay(wall, from, dir, bodyFrom, bodyTo, step) {
-    let best = undefined, bestDist = Infinity;
+function nearestDisplay(wall, from, dir, bodyFrom, bodyTo, step, radius, shooter) {
+    /** @type {string | undefined} */
+    let best = undefined;
+    let bestDist = Infinity, bestAlong = Infinity;
     for (const [id, ak] of wall) {
         if (!ak.IsValid()) continue;
         const o = ak.GetAbsOrigin();
@@ -870,10 +986,21 @@ function nearestDisplay(wall, from, dir, bodyFrom, bodyTo, step) {
             const along = d.x * dir.x + d.y * dir.y + d.z * dir.z;
             if (along < 0 || along > SHOT_RANGE) continue;
             const off = Math.hypot(d.x - along * dir.x, d.y - along * dir.y, d.z - along * dir.z);
-            if (off < bestDist) { best = id; bestDist = off; }
+            if (off > radius) continue;
+            if (along < bestAlong) { best = id; bestDist = off; bestAlong = along; }
         }
     }
-    return { id: best, dist: bestDist };
+    if (best === undefined) return { id: undefined, dist: Infinity, along: Infinity };
+    // A wall (or anything solid) between the shooter and the item stops the shot
+    const stop = Math.max(0, bestAlong - 6);
+    const tr = Instance.TraceLine({
+        start: from,
+        end: { x: from.x + dir.x * stop, y: from.y + dir.y * stop, z: from.z + dir.z * stop },
+        ignorePlayers: true,
+        ...(shooter ? { ignoreEntity: shooter } : {}),
+    });
+    if (tr.didHit) return { id: undefined, dist: Infinity, along: Infinity };
+    return { id: best, dist: bestDist, along: bestAlong };
 }
 
 /** @param {string} id model id like "c_ak_cyberpunk" */
@@ -887,14 +1014,26 @@ function skinOfModelId(id) {
 }
 
 Instance.OnGunFire(({ weapon }) => {
-    if (displayAks.size === 0 && displayKnives.size === 0) return;
+    const latestOn = latestEntity !== undefined && latestEntity.IsValid();
+    if (displayAks.size === 0 && displayKnives.size === 0 && !latestOn) return;
     const shooter = weapon.GetOwner();
     if (!shooter || !isHumanPawn(shooter)) return;
 
     const eye = shooter.GetEyePosition(), aim = forwardFromAngles(shooter.GetEyeAngles());
-    const hitKnife = nearestDisplay(displayKnives, eye, aim, KNIFE_BODY_FROM, KNIFE_BODY_TO, KNIFE_BODY_STEP);
-    const { id, dist } = nearestDisplayAk(eye, aim);
-    if (hitKnife.id && hitKnife.dist <= KNIFE_HIT_RADIUS && (!id || hitKnife.dist < dist)) {
+    // The "latest" display counts as one more item on the gun wall or the knife wall
+    const latestKind = latestShown.slice(0, latestShown.indexOf(":"));
+    const latestId = latestShown.slice(latestShown.indexOf(":") + 1);
+    const knifeWall = new Map(displayKnives), gunWall = new Map(displayAks);
+    // Its own key ("#" never appears in a skin id): the same skin is usually on the wall
+    // too, and must stay shootable there
+    const LATEST_KEY = "#latest";
+    if (latestOn && latestEntity) (latestKind === "knife" ? knifeWall : gunWall).set(LATEST_KEY, latestEntity);
+    const hitKnife = nearestDisplay(knifeWall, eye, aim, KNIFE_BODY_FROM, KNIFE_BODY_TO, KNIFE_BODY_STEP, KNIFE_HIT_RADIUS, shooter);
+    if (hitKnife.id === LATEST_KEY) hitKnife.id = latestId;
+    const nearestGun = nearestDisplay(gunWall, eye, aim, AK_BODY_FROM, AK_BODY_TO, AK_BODY_STEP, SHOT_HIT_RADIUS, shooter);
+    const id = nearestGun.id === LATEST_KEY ? latestId : nearestGun.id, dist = nearestGun.dist;
+    // Whichever is nearer to the shooter is the one the bullet reaches first
+    if (hitKnife.id && (!id || hitKnife.along < nearestGun.along)) {
         const sid = hitKnife.id;
         if (sid === equippedKnife) {
             setResult(`${knifeDisplayName(sid)} is already in your hands`, RARITIES[RARITIES.length - 1].color);
@@ -927,6 +1066,7 @@ Instance.OnGunFire(({ weapon }) => {
         Instance.QueueAfterThinks(() => restoreOwnAk(shooter, current, gear));
         return;
     }
+    Instance.Msg(`[gacha] wall hit: ${id} (shot passed ${dist.toFixed(1)} units away), slot ${gear}, current ${current ? current.GetClassName() : "none"}`);
     Instance.QueueAfterThinks(() => swapForSkinnedAk(shooter, current, id, info, dist, gear));
 });
 
@@ -975,6 +1115,12 @@ function stashOwnAk(pawn, ak, gear = CSGearSlot.RIFLE) {
     ak.SetMoveType(CSMoveType.NONE);
     Instance.EntFireAtTarget({ target: ak, input: "ToggleCanBePickedUp" });
     ownAks.set(slot, { ak, moveType });
+    // Debug: where the own weapon ended up
+    Instance.Delay(0.5).then(() => {
+        if (!ak.IsValid()) { Instance.Msg(`[gacha] stash: own ${ak.GetClassName()} was removed`); return; }
+        const p = ak.GetAbsOrigin();
+        Instance.Msg(`[gacha] stash: own ${ak.GetClassName()} at z=${Math.round(p.z)}${ak.GetOwner() ? ", held" : ""}`);
+    });
 }
 
 /**
@@ -1071,13 +1217,14 @@ async function swapForSkinnedAk(pawn, oldAk, id, info, dist, gear) {
     Instance.Msg(`[gacha] equipped ${model} (shot passed ${dist.toFixed(1)} units away)`);
 }
 
-const SCRIPT_VERSION = "legend-cap20-1";
+const SCRIPT_VERSION = "shot-occlusion-1";
 
 Instance.OnActivate(() => {
     Instance.Msg(`[gacha] aim_gacha.js loaded (${SCRIPT_VERSION})`);
     loadProgress();
     printRates();
     resultMessage = `Press the button to roll (${COST} coins)`;
+    giveWelcomeTicket();
     refreshTexts();
 });
 
@@ -1094,6 +1241,7 @@ Instance.OnRoundStart(() => {
 const handedOverAks = new Set();
 
 Instance.OnWeaponDrop(({ weapon, dropper }) => {
+    if (dropper && isHumanPawn(dropper)) Instance.Msg(`[gacha] you dropped ${weapon.GetClassName()} (${weapon.GetModelName().split("/").pop()})`);
     if (handedOverAks.has(weapon)) return;
     const ctrl = dropper?.GetPlayerController();
     if (!ctrl || !ctrl.IsBot()) return;
@@ -1151,7 +1299,9 @@ Instance.OnScriptInput("gacha", ({ caller, activator }) => {
 function giveSkin(rarity, skin, button, activator) {
     const isNew = !hasSkin(rarity.id, skin);
     inventory.push({ skin, rarity: rarity.id });
+    latestSkin = `gun:${modelIdOf(rarity, skin)}`;
     saveProgress();
+    showLatest();
 
     dropAk(rarity.color, skinModel(rarity, skin), button, activator);
 
@@ -1193,7 +1343,7 @@ function clearDroppedWeapons() {
         for (const ent of weapons) {
             if (!(ent instanceof CSWeaponBase)) { notWeapon++; continue; }
             if (ent.GetOwner()) { held++; continue; }
-            if (isDisplayAk(ent) || isDisplayKnife(ent)) continue; // the showcase walls stay
+            if (isDisplayAk(ent) || isDisplayKnife(ent) || isLatestDisplay(ent)) continue; // the showcase walls stay
             if (isStashedAk(ent)) continue; // players' own AKs, hidden while a gacha skin is used
             ent.Remove();
             removed++;
@@ -1402,6 +1552,7 @@ Instance.OnScriptInput("buy", ({ caller, activator }) => {
             return;
         }
         if (!knives.includes(sid)) knives.push(sid);
+        setLatest(`knife:${sid}`);
         equippedKnife = sid;
         saveProgress();
         refreshKnifeWall();
@@ -1439,6 +1590,7 @@ Instance.OnScriptInput("knife", ({ activator }) => {
         knifeTickets--;
         const isNew = !knives.includes(sid);
         if (isNew) knives.push(sid);
+        setLatest(`knife:${sid}`);
         equippedKnife = sid;
         saveProgress();
         updateKnifeText();
@@ -1601,14 +1753,18 @@ function entCreate(cls) {
  * @param {string} id
  * @param {Vector} pos
  * @param {CSPlayerPawn | undefined} pawn
+ * @param {boolean} [forHand] it must be picked up by walking over it
  * @returns {Promise<CSWeaponBase | undefined>}
  */
-async function makeSkinnedWeapon(id, pos, pawn) {
+async function makeSkinnedWeapon(id, pos, pawn, forHand = false) {
     const info = skinOfModelId(id);
     const cls = info ? WEAPON_INFO[weaponOf(info.skin)]?.cls : undefined;
     if (!cls) return undefined;
-    const w = cls === "weapon_ak47" ? spawnAk(pos, pawn)
-        : fromTemplate(`gacha_tpl_${weaponOf(/** @type {{ skin: string }} */ (info).skin)}`, pos) ?? await entCreate(cls);
+    // Weapons from map templates aren't picked up by walking over them, so a weapon that
+    // has to land in the player's hands is made through a bot (a normal dropped weapon)
+    const fromBot = forHand ? giveThroughBot(cls, WEAPON_INFO[weaponOf(/** @type {{ skin: string }} */ (info).skin)].slot) : undefined;
+    const w = fromBot ?? (cls === "weapon_ak47" ? spawnAk(pos, pawn)
+        : fromTemplate(`gacha_tpl_${weaponOf(/** @type {{ skin: string }} */ (info).skin)}`, pos) ?? await entCreate(cls));
     if (!w || !w.IsValid()) return undefined;
     w.Teleport({ position: pos, velocity: { x: 0, y: 0, z: 0 } });
     applySkinModel(w, modelPathOf(id));
@@ -1834,6 +1990,7 @@ adminCommand("knife_give", (args) => {
     giveKnife(pawn, sid).then((ok) => {
         if (!ok) return;
         if (!knives.includes(sid)) knives.push(sid);
+        setLatest(`knife:${sid}`);
         equippedKnife = sid;
         saveProgress();
         refreshKnifeWall();
